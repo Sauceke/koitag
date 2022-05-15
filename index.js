@@ -1,7 +1,6 @@
-const BufferReader = require("buffer-reader");
+var BufferReader = require("buffer-reader");
 const chroma = require("chroma-js");
 const Color = require("colorficial");
-const fs = require("fs");
 const msgpackr = require("msgpackr");
 
 function skipPng(reader) {
@@ -52,16 +51,20 @@ function getCardData(buffer) {
 	return {face: face, body: body, hair: hair, soul: soul};
 }
 
-const convertKkColor = rgb => chroma(rgb.slice(0, 3).map(ch => ch * 255)).darken(1).hex();
+const convertKkColor = rgb => chroma(rgb.slice(0, 3).map(ch => ch * 255));
 
 function getColorName(rgb) {
-	let color = new Color(convertKkColor(rgb)).name();
-	if (color == "gray") {
+	let color = convertKkColor(rgb).darken(1);
+	if (color.luminance() < 0.01) {
+		return "black";
+	}
+	let colorName = new Color(color.hex()).name();
+	if (colorName == "gray") {
 		// "mistaking" a color for gray seems to be about the only failure mode for colorficial
 		// this is great because we know when not to add the tag
 		return false;
 	}
-	return color?.replace?.("violet", "purple");
+	return colorName?.replace?.("violet", "purple");
 }
 
 const getHairColorName = rgb => getColorName(rgb)?.replace?.("yellow", "blonde");
@@ -81,13 +84,24 @@ const rules = {
 		if (colors.size != 1) {
 			return false;
 		}
-		return [...colors][0]
+		return [...colors][0];
 	},
 	sidelocks: data => data.hair.parts[2]?.id,
 	ahoge: data => data.hair.parts[3]?.id,
+	// eyes
+	COLOR_eyes: function(data) {
+		let color = getColorName(data.face.pupil[0].baseColor);
+		let subColor = getColorName(data.face.pupil[0].subColor);
+		return (color == subColor) && !rules.heterochromia(data) && color;
+	},
+	heterochromia: data =>
+		getColorName(data.face.pupil[0].baseColor) != getColorName(data.face.pupil[1].baseColor) ||
+			getColorName(data.face.pupil[0].subColor) != getColorName(data.face.pupil[1].subColor),
 	// ears
 	pointy_ears: data => data.face.shapeValueFace[50] > 0.5,
-	// teef
+	// mouth
+	COLOR_lips: data => data.face.baseMakeup.lipId != 0 && data.face.baseMakeup.lipColor[3] > 0.7
+		&& getColorName(data.face.baseMakeup.lipColor),
 	fangs: data => data.face.doubleTooth,
 	sharp_teeth: data => data.face.headId == 61,
 	// boing boing
@@ -96,10 +110,16 @@ const rules = {
 	huge_breasts: data => data.body.shapeValueBody[4] > 1,
 	// ( ͡° ͜ʖ ͡°)
 	COLOR_pubic_hair: data =>
-		data.body.underhairId == 0 ? false : getHairColorName(data.body.underhairColor)
+		data.body.underhairId != 0 && getHairColorName(data.body.underhairColor),
+	// other
+	short: data => data.body.shapeValueBody[0] < 0.1,
+	tall: data => data.body.shapeValueBody[0] > 0.8,
+	loli: data => rules.female(data) && rules.short(data) && rules.small_breasts(data) &&
+		rules.high_voice(data),
+	shota: data => rules.male(data) && rules.short(data)
 }
 
-function* getTags(data) {
+function* enumerateTags(data) {
 	for (let tag of Object.keys(rules)) {
 		let result = rules[tag](data);
 		if (result) {
@@ -108,12 +128,9 @@ function* getTags(data) {
 	}
 }
 
-const files = fs.readdirSync("C:/illusion/Koikatsu/UserData/chara/female")
-for (const file of files) {
-  if (file.endsWith(".png")) {
-	let buf = fs.readFileSync("C:/illusion/Koikatsu/UserData/chara/female/" + file);
-	let data = getCardData(buf);
-	let tags = [...getTags(data)];
-	console.log(file + " " + JSON.stringify(tags));
-  }
-}
+const getTags = buffer => [...enumerateTags(getCardData(Buffer.from(buffer)))]
+		// filter out tags that don't sound right
+		.filter(tag => !["brown_lips"].includes(tag))
+		.sort();
+
+exports.getTags = getTags;
